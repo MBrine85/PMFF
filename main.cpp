@@ -18,6 +18,7 @@ std::wstring string_to_wstring(const std::string& str) {
 }
 
 bool download(std::wstring url, std::filesystem::path output) {
+    std::wcout << L"Opening session..." << std::endl;
     HINTERNET hSession = WinHttpOpen(
         L"PMFF Package Manager",
         WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
@@ -26,7 +27,10 @@ bool download(std::wstring url, std::filesystem::path output) {
         0
     );
 
-    if (!hSession) return false;
+    if (!hSession) {
+        std::wcerr << L"WinHttpOpen failed with error: " << GetLastError() << std::endl;
+        return false;
+    }
 
     URL_COMPONENTS urlcomp{};
     urlcomp.dwStructSize = sizeof(urlcomp);
@@ -40,19 +44,40 @@ bool download(std::wstring url, std::filesystem::path output) {
     urlcomp.lpszUrlPath = urlpath;
     urlcomp.dwUrlPathLength = sizeof(urlpath) / sizeof(urlpath[0]);
 
-    if (!WinHttpCrackUrl(url.c_str(), (DWORD)url.length(), 0, &urlcomp)) {
+    std::wcout << L"Parsing URL..." << std::endl;
+    BOOL result = WinHttpCrackUrl(
+        url.c_str(),
+        (DWORD)url.length(),
+        0,
+        &urlcomp
+    );
+
+    if (result == 0) {
+        std::wcerr << L"WinHttpCrackUrl failed with error: " << GetLastError() << std::endl;
         WinHttpCloseHandle(hSession);
         return false;
     }
 
-    HINTERNET hConnect = WinHttpConnect(hSession, urlcomp.lpszHostName, urlcomp.nPort, 0);
+    std::wcout << L"Connecting to host: " << hostname << std::endl;
+    HINTERNET hConnect = WinHttpConnect(
+        hSession,
+        urlcomp.lpszHostName,
+        urlcomp.nPort,
+        0
+    );
+
     if (!hConnect) {
+        std::wcerr << L"WinHttpConnect failed with error: " << GetLastError() << std::endl;
         WinHttpCloseHandle(hSession);
         return false;
     }
 
-    DWORD flags = (urlcomp.nScheme == INTERNET_SCHEME_HTTPS) ? WINHTTP_FLAG_SECURE : 0;
+    DWORD flags = 0;
+    if (urlcomp.nScheme == INTERNET_SCHEME_HTTPS) {
+        flags = WINHTTP_FLAG_SECURE;
+    }
 
+    std::wcout << L"Opening HTTP request..." << std::endl;
     HINTERNET hRequest = WinHttpOpenRequest(
         hConnect,
         L"GET",
@@ -64,30 +89,34 @@ bool download(std::wstring url, std::filesystem::path output) {
     );
 
     if (!hRequest) {
+        std::wcerr << L"WinHttpOpenRequest failed with error: " << GetLastError() << std::endl;
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
         return false;
     }
 
-    DWORD redirectPolicy = WINHTTP_OPTION_REDIRECT_POLICY_ALWAYS;
-    WinHttpSetOption(hRequest, WINHTTP_OPTION_REDIRECT_POLICY, &redirectPolicy, sizeof(redirectPolicy));
-
+    std::wcout << L"Sending request..." << std::endl;
     if (!WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0, NULL, 0, 0, 0)) {
+        std::wcerr << L"WinHttpSendRequest failed with error: " << GetLastError() << std::endl;
         WinHttpCloseHandle(hRequest);
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
         return false;
     }
 
+    std::wcout << L"Receiving response..." << std::endl;
     if (!WinHttpReceiveResponse(hRequest, NULL)) {
+        std::wcerr << L"WinHttpReceiveResponse failed with error: " << GetLastError() << std::endl;
         WinHttpCloseHandle(hRequest);
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
         return false;
     }
 
+    std::wcout << L"Opening output file: " << output.c_str() << std::endl;
     std::ofstream outfile(output, std::ios::binary);
     if (!outfile) {
+        std::wcerr << L"Failed to open output file" << std::endl;
         WinHttpCloseHandle(hRequest);
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
@@ -97,19 +126,23 @@ bool download(std::wstring url, std::filesystem::path output) {
     DWORD dwSize = 0;
     do {
         if (!WinHttpQueryDataAvailable(hRequest, &dwSize)) {
+            std::wcerr << L"WinHttpQueryDataAvailable failed with error: " << GetLastError() << std::endl;
             outfile.close();
             WinHttpCloseHandle(hRequest);
             WinHttpCloseHandle(hConnect);
             WinHttpCloseHandle(hSession);
             return false;
         }
-        if (dwSize == 0) break;
+
+        if (dwSize == 0)
+            break;
 
         std::vector<char> buffer(dwSize);
         DWORD dwDownloaded = 0;
         BOOL readResult = WinHttpReadData(hRequest, buffer.data(), dwSize, &dwDownloaded);
 
         if (!readResult || dwDownloaded == 0) {
+            std::wcerr << L"WinHttpReadData failed or no data read, error: " << GetLastError() << std::endl;
             outfile.close();
             WinHttpCloseHandle(hRequest);
             WinHttpCloseHandle(hConnect);
@@ -118,12 +151,17 @@ bool download(std::wstring url, std::filesystem::path output) {
         }
 
         outfile.write(buffer.data(), dwDownloaded);
+        std::wcout << L"Downloaded " << dwDownloaded << L" bytes..." << std::endl;
+
     } while (dwSize > 0);
 
     outfile.close();
     WinHttpCloseHandle(hRequest);
     WinHttpCloseHandle(hConnect);
     WinHttpCloseHandle(hSession);
+
+    std::wcout << L"Download complete" << std::endl;
+
     return true;
 }
 
@@ -190,7 +228,7 @@ void install(std::string appname, std::filesystem::path root) {
                 }
 
                 if (ext != ".zip") {
-                    std::cout << "Only .zip files supported for installation." << std::endl;
+                    std::cout << "Only .zip files supported for installation" << std::endl;
                     return;
                 }
 
@@ -281,6 +319,31 @@ void remove(std::string appname, std::filesystem::path root) {
     std::cout << "No app with the matching name installed" << std::endl;
 }
 
+void create(std::string url, std::filesystem::path root) {
+    json manifest;
+    std::string input;
+
+    std::cout << "Input name: ";
+    std::getline(std::cin, input);
+    manifest["name"] = input;
+
+    if (std::filesystem::exists(root / "app_manifests" / (std::string(manifest["name"]) + ".json"))) {
+        std::cout << "Manifest already exists" << std::endl;
+        return;
+    }
+
+    std::cout << "Input version: ";
+    std::getline(std::cin, input);
+    manifest["version"] = input;
+
+    manifest["url"] = url;
+
+    std::ofstream out_manifest(root / "app_manifests" / (std::string(manifest["name"]) + ".json"));
+    out_manifest << manifest.dump(4);
+
+    std::cout << "Created manifest for " << std::string(manifest["name"]) << std::endl;
+}
+
 int main(int argc, char** argv) {
     const char* path = std::getenv("LOCALAPPDATA");
     if (path == nullptr) {
@@ -297,10 +360,16 @@ int main(int argc, char** argv) {
 
     if (std::string(argv[1]) == "help") {
         std::cout << "pmff list: lists installed apps" << std::endl;
+        std::cout << "pmff path: outputs pmff's path" << std::endl;
         std::cout << "pmff install <appname>: installs an app" << std::endl;
         std::cout << "pmff remove <appname>: uninstalls an app" << std::endl;
+        std::cout << "pmff create <url>: creates a manifest for an app" << std::endl;
     } else if (std::string(argv[1]) == "list") {
         list(pmffroot);
+    } else if (std::string(argv[1]) == "path") {
+        std::string path = pmffroot.string();
+        std::replace(path.begin(), path.end(), '\\', '/');
+        std::cout << path << std::endl;
     } else if (std::string(argv[1]) == "install") {
         if (argc < 3) {
             std::cout << "No app specified" << std::endl;
@@ -313,6 +382,13 @@ int main(int argc, char** argv) {
             return 0;
         }
         remove(std::string(argv[2]), pmffroot);
+    } else if (std::string(argv[1]) == "create") {
+        if (argc < 3) {
+            std::cout << "No URL provided" << std::endl;
+            return 0;
+        }
+        create(std::string(argv[2]), pmffroot);
     }
+
     return 0;
 }
