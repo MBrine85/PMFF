@@ -29,8 +29,10 @@ g++ main.cpp -static -static-libgcc -static-libstdc++ -lwinhttp -o pmff.exe
 
 ```sh
 pmff list
+pmff path
 pmff install <appname>
 pmff remove <appname>
+pmff create <url>
 pmff help
 ```
 
